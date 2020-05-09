@@ -29,6 +29,10 @@ Parameters:
     Type: String
     Description: DynamoDB table to create
     Default: workspacesportal
+  RegionList:
+    Type: String
+    Description: List of Regions.  String with comma separated region names.
+    Default: "us-west-2"
   UniqueSuffix:
     Type: String
     Description: Optional suffix to make identifying stack resources easier and to avoid conflicts
@@ -142,7 +146,7 @@ Resources:
       Environment:
         Variables:
           DynamoDBTableName: !Ref DDBTable
-
+          RegionList: !Ref RegionList
   LambdaFunctionPortalActions:
     Type: AWS::Lambda::Function
     DependsOn: LambdaRole
@@ -159,7 +163,7 @@ Resources:
       Environment:
         Variables:
           DynamoDBTableName: !Ref DDBTable
-
+          RegionList: !Ref RegionList
   LambdaFunctionListInstances:
     Type: AWS::Lambda::Function
     DependsOn: LambdaRole
@@ -176,7 +180,7 @@ Resources:
       Environment:
         Variables:
           DynamoDBTableName: !Ref DDBTable
-
+          RegionList: !Ref RegionList
   LambdaFunctionPortalReaper:
     Type: AWS::Lambda::Function
     DependsOn: LambdaRole
@@ -193,7 +197,7 @@ Resources:
       Environment:
         Variables:
           DynamoDBTableName: !Ref DDBTable
-
+          RegionList: !Ref RegionList
   LambdaListPermission:
     Type: "AWS::Lambda::Permission"
     DependsOn: APIGateway
