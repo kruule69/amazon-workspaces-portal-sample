@@ -23,10 +23,15 @@ import logging
 import time
 from botocore.exceptions import ClientError,EndpointConnectionError
 
+# Prevent errors due to the service seeing too many queries per second
+from botocore.config import Config
+config = Config (retries = dict( max_attempts = 50))
+
 RegistrationCodes = {}
 Logger            = None
 DDBTableName      = "WorkspacesPortal"
 
+####################################### 
 def GetRegCode(Client, DirectoryId):
     global Logger
     
@@ -44,7 +49,8 @@ def GetRegCode(Client, DirectoryId):
     if DirectoryId in RegistrationCodes: return(RegistrationCodes[DirectoryId])
 
     return("")
-        
+
+#######################################        
 def lambda_handler(event, context):
     global Logger,DDBTableName
     
@@ -69,12 +75,15 @@ def lambda_handler(event, context):
             Regions.append("us-east-1")
         Logger.info("All regions: "+"".join(Regions))
 
+    ws_count=0
     for TargetRegion in Regions:
+        
         Logger.info("Checking: "+TargetRegion)
-        WorkspacesClient = boto3.client("workspaces", region_name=TargetRegion)
-     
+        WorkspacesClient = boto3.client("workspaces", region_name=TargetRegion, config=config)        
+        
         try:
-            ListResponse = WorkspacesClient.describe_workspaces()
+            # Workspaces Service limits to only 25 at a time.
+            paginator = WorkspacesClient.get_paginator('describe_workspaces')
         except EndpointConnectionError as e:
             Logger.warning("Could not connect to endpoint in region "+TargetRegion)
             continue
@@ -82,41 +91,47 @@ def lambda_handler(event, context):
             Logger.error("Failed to get Workspaces list for region "+TargetRegion+" - "+str(e))
             continue
             
-        if len(ListResponse["Workspaces"]) == 0:
-            Logger.info("  No Workspaces instances found in region "+TargetRegion)
-            continue
 
-        #
-        # Here we get the connection details for all the Workspaces instances at once
-        # It is more efficient this way even though we could call this API
-        # individually for each instance we have in ListResponse
-        #
-        ConnectionResponse = WorkspacesClient.describe_workspaces_connection_status()
-        LastConnectedTime = {}
-        for Connection in ConnectionResponse["WorkspacesConnectionStatus"]:
-            try:
-                LastConnectedTime[Connection["WorkspaceId"]] = Connection["LastKnownUserConnectionTimestamp"].strftime("%s")
-            except:
-                pass
 
-        DynamoDBClient = boto3.client("dynamodb")
-        for Instance in ListResponse["Workspaces"]:
-            Logger.info("  WorkspaceId: "+Instance["WorkspaceId"])
-
-            Item = {"WorkspaceId":  {"S":Instance["WorkspaceId"]},
-                    "UserName":     {"S":Instance["UserName"]},
-                    "Region":       {"S":TargetRegion},
-                    "InstanceState":{"S":Instance["State"]},
-                    "LastTouched":  {"N":str(time.time())},
-                    "RunningMode":  {"S":Instance["WorkspaceProperties"]["RunningMode"]},
-                    "RegCode":      {"S":GetRegCode(WorkspacesClient, Instance["DirectoryId"])}
-            }
-
-            if "ComputerName"          in Instance:          Item["ComputerName"]  = {"S":Instance["ComputerName"]}
-            if "IpAddress"             in Instance:          Item["IPAddress"]     = {"S":Instance["IpAddress"]}
-            if Instance["WorkspaceId"] in LastConnectedTime: Item["LastConnected"] = {"N":LastConnectedTime[Instance["WorkspaceId"]]}
-
-            try:
-                DynamoDBClient.put_item(TableName=DDBTableName, Item=Item)
-            except ClientError as e:
-                Logger.error("DynamoDB error: "+e.response["Error"]["Message"])
+        pages = paginator.paginate()
+        
+        for ListResponse in pages:
+            if len(ListResponse["Workspaces"]) == 0:
+                Logger.info("  No Workspaces instances found in region "+TargetRegion)
+                continue
+        
+            #
+            # Here we get the connection details for all the Workspaces instances at once
+            # It is more efficient this way even though we could call this API
+            # individually for each instance we have in ListResponse
+            #
+            ConnectionResponse = WorkspacesClient.describe_workspaces_connection_status()
+            LastConnectedTime = {}
+            for Connection in ConnectionResponse["WorkspacesConnectionStatus"]:
+                try:
+                    LastConnectedTime[Connection["WorkspaceId"]] = Connection["LastKnownUserConnectionTimestamp"].strftime("%s")
+                except:
+                    pass
+    
+            DynamoDBClient = boto3.client("dynamodb")
+            for Instance in ListResponse["Workspaces"]:
+                ws_count=ws_count +1
+                Logger.info("  WorkspaceId["+str(ws_count)+"]: "+Instance["WorkspaceId"])
+    
+                Item = {"WorkspaceId":  {"S":Instance["WorkspaceId"]},
+                        "UserName":     {"S":Instance["UserName"]},
+                        "Region":       {"S":TargetRegion},
+                        "InstanceState":{"S":Instance["State"]},
+                        "LastTouched":  {"N":str(time.time())},
+                        "RunningMode":  {"S":Instance["WorkspaceProperties"]["RunningMode"]},
+                        "RegCode":      {"S":GetRegCode(WorkspacesClient, Instance["DirectoryId"])}
+                }
+    
+                if "ComputerName"          in Instance:          Item["ComputerName"]  = {"S":Instance["ComputerName"]}
+                if "IpAddress"             in Instance:          Item["IPAddress"]     = {"S":Instance["IpAddress"]}
+                if Instance["WorkspaceId"] in LastConnectedTime: Item["LastConnected"] = {"N":LastConnectedTime[Instance["WorkspaceId"]]}
+    
+                try:
+                    DynamoDBClient.put_item(TableName=DDBTableName, Item=Item)
+                except ClientError as e:
+                    Logger.error("DynamoDB error: "+e.response["Error"]["Message"])
